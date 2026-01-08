@@ -139,6 +139,9 @@ venv.bak/
 
 logs/*
 
+# Runtime data
+data/*
+
 # Spyder project settings
 .spyderproject
 .spyproject
