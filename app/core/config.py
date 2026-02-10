@@ -30,7 +30,7 @@ DEFAULT_GLOBAL = {
     "base_url": "http://localhost:8000",
     "log_level": "INFO",
     "image_mode": "url",
-    "admin_password": "admin",
+    "admin_password": "CHANGE_ME",
     "admin_username": "admin",
     "image_cache_max_size_mb": 512,
     "video_cache_max_size_mb": 1024,

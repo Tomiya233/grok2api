@@ -122,11 +122,13 @@ async def lifespan(app: FastAPI):
 logger.info("[Grok2API] 应用正在启动...")
 logger.info("[Grok2API] Fork 版本维护: @Tomiya233")
 
+APP_VERSION = os.getenv("APP_VERSION", "1.4.3")
+
 # 创建FastAPI应用
 app = FastAPI(
     title="Grok2API",
     description="Grok API 转换服务",
-    version="1.3.1",
+    version=APP_VERSION,
     lifespan=lifespan
 )
 
@@ -155,7 +157,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "Grok2API",
-        "version": "1.0.3"
+        "version": APP_VERSION
     }
 
 # 挂载MCP服务器 
