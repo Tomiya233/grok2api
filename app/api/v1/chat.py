@@ -26,7 +26,7 @@ async def chat_completions(
     """创建聊天补全（支持流式和非流式）"""
     start_time = time.time()
     model = body.model
-    ip = request.client.host
+    ip = request.client.host if request.client else "unknown"
     key_name = auth_info.get("name", "Unknown")
     
     status_code = 200
