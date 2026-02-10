@@ -15,7 +15,7 @@ if [ ! -f /app/data/setting.toml ]; then
 base_url = "http://localhost:8000"
 log_level = "INFO"
 image_mode = "url"
-admin_password = "CHANGE_ME"
+admin_password = "admin"
 admin_username = "admin"
 image_cache_max_size_mb = 512
 video_cache_max_size_mb = 1024

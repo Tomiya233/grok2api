@@ -279,10 +279,6 @@ async def admin_login(request: LoginRequest) -> LoginResponse:
         expected_user = setting.global_config.get("admin_username", "")
         expected_pass = setting.global_config.get("admin_password", "")
 
-        if expected_pass in {"admin", "CHANGE_ME"}:
-            logger.warning("[Admin] 检测到默认管理员密码，拒绝登录")
-            return LoginResponse(success=False, message="检测到默认管理员密码，请先在配置中修改 admin_password")
-
         if request.username != expected_user or request.password != expected_pass:
             logger.warning(f"[Admin] 登录失败: {request.username}")
             return LoginResponse(success=False, message="用户名或密码错误")
