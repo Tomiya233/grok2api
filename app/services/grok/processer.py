@@ -15,52 +15,60 @@ from app.models.openai_schema import (
     OpenAIChatCompletionMessage,
     OpenAIChatCompletionChunkResponse,
     OpenAIChatCompletionChunkChoice,
-    OpenAIChatCompletionChunkMessage
+    OpenAIChatCompletionChunkMessage,
 )
 from app.services.grok.cache import image_cache_service, video_cache_service
 
 
 class StreamTimeoutManager:
     """流式响应超时管理"""
-    
-    def __init__(self, chunk_timeout: int = 120, first_timeout: int = 30, total_timeout: int = 600):
+
+    def __init__(
+        self,
+        chunk_timeout: int = 120,
+        first_timeout: int = 30,
+        total_timeout: int = 600,
+    ):
         self.chunk_timeout = chunk_timeout
         self.first_timeout = first_timeout
         self.total_timeout = total_timeout
-        self.start_time = asyncio.get_event_loop().time()
+        self._loop = asyncio.get_running_loop()
+        self.start_time = self._loop.time()
         self.last_chunk_time = self.start_time
         self.first_received = False
-    
+
     def check_timeout(self) -> Tuple[bool, str]:
         """检查超时"""
-        now = asyncio.get_event_loop().time()
-        
+        now = self._loop.time()
+
         if not self.first_received and now - self.start_time > self.first_timeout:
             return True, f"首次响应超时({self.first_timeout}秒)"
-        
+
         if self.total_timeout > 0 and now - self.start_time > self.total_timeout:
             return True, f"总超时({self.total_timeout}秒)"
-        
+
         if self.first_received and now - self.last_chunk_time > self.chunk_timeout:
             return True, f"数据块超时({self.chunk_timeout}秒)"
-        
+
         return False, ""
-    
+
     def mark_received(self):
         """标记收到数据"""
-        self.last_chunk_time = asyncio.get_event_loop().time()
+        self.last_chunk_time = self._loop.time()
         self.first_received = True
-    
+
     def duration(self) -> float:
         """获取总耗时"""
-        return asyncio.get_event_loop().time() - self.start_time
+        return self._loop.time() - self.start_time
 
 
 class GrokResponseProcessor:
     """Grok响应处理器"""
 
     @staticmethod
-    async def process_normal(response, auth_token: str, model: str = None) -> OpenAIChatCompletionResponse:
+    async def process_normal(
+        response, auth_token: str, model: str = None
+    ) -> OpenAIChatCompletionResponse:
         """处理非流式响应"""
         response_closed = False
         try:
@@ -75,16 +83,20 @@ class GrokResponseProcessor:
                     raise GrokApiException(
                         f"API错误: {error.get('message', '未知错误')}",
                         "API_ERROR",
-                        {"code": error.get("code")}
+                        {"code": error.get("code")},
                     )
 
                 grok_resp = data.get("result", {}).get("response", {})
-                
+
                 # 视频响应
                 if video_resp := grok_resp.get("streamingVideoGenerationResponse"):
                     if video_url := video_resp.get("videoUrl"):
-                        content = await GrokResponseProcessor._build_video_content(video_url, auth_token)
-                        result = GrokResponseProcessor._build_response(content, model or "grok-imagine-0.9")
+                        content = await GrokResponseProcessor._build_video_content(
+                            video_url, auth_token
+                        )
+                        result = GrokResponseProcessor._build_response(
+                            content, model or "grok-imagine-0.9"
+                        )
                         response_closed = True
                         response.close()
                         return result
@@ -103,7 +115,9 @@ class GrokResponseProcessor:
 
                 # 处理图片
                 if images := model_response.get("generatedImageUrls"):
-                    content = await GrokResponseProcessor._append_images(content, images, auth_token)
+                    content = await GrokResponseProcessor._append_images(
+                        content, images, auth_token
+                    )
 
                 result = GrokResponseProcessor._build_response(content, model_name)
                 response_closed = True
@@ -119,14 +133,16 @@ class GrokResponseProcessor:
             logger.error(f"[Processor] 处理错误: {type(e).__name__}: {e}")
             raise GrokApiException(f"响应处理错误: {e}", "PROCESS_ERROR") from e
         finally:
-            if not response_closed and hasattr(response, 'close'):
+            if not response_closed and hasattr(response, "close"):
                 try:
                     response.close()
                 except Exception as e:
                     logger.warning(f"[Processor] 关闭响应失败: {e}")
 
     @staticmethod
-    async def process_stream(response, auth_token: str, session: Any = None) -> AsyncGenerator[str, None]:
+    async def process_stream(
+        response, auth_token: str, session: Any = None
+    ) -> AsyncGenerator[str, None]:
         """处理流式响应"""
         # 状态变量
         is_image = False
@@ -143,23 +159,29 @@ class GrokResponseProcessor:
         timeout_mgr = StreamTimeoutManager(
             chunk_timeout=setting.grok_config.get("stream_chunk_timeout", 120),
             first_timeout=setting.grok_config.get("stream_first_response_timeout", 30),
-            total_timeout=setting.grok_config.get("stream_total_timeout", 600)
+            total_timeout=setting.grok_config.get("stream_total_timeout", 600),
         )
+
+        # 为整个流生成一个固定的 completion ID，避免每个 chunk 都调用 uuid4()
+        stream_id = f"chatcmpl-{uuid.uuid4()}"
 
         def make_chunk(content: str, finish: str = None):
             """生成响应块"""
             chunk_data = OpenAIChatCompletionChunkResponse(
-                id=f"chatcmpl-{uuid.uuid4()}",
+                id=stream_id,
                 created=int(time.time()),
                 model=model or "grok-4-mini-thinking-tahoe",
-                choices=[OpenAIChatCompletionChunkChoice(
-                    index=0,
-                    delta=OpenAIChatCompletionChunkMessage(
-                        role="assistant",
-                        content=content
-                    ) if content else {},
-                    finish_reason=finish
-                )]
+                choices=[
+                    OpenAIChatCompletionChunkChoice(
+                        index=0,
+                        delta=OpenAIChatCompletionChunkMessage(
+                            role="assistant", content=content
+                        )
+                        if content
+                        else {},
+                        finish_reason=finish,
+                    )
+                ],
             )
             return f"data: {chunk_data.model_dump_json()}\n\n"
 
@@ -182,17 +204,17 @@ class GrokResponseProcessor:
 
                     # 错误检查
                     if error := data.get("error"):
-                        error_msg = error.get('message', '未知错误')
+                        error_msg = error.get("message", "未知错误")
                         logger.error(f"[Processor] API错误: {error_msg}")
                         yield make_chunk(f"Error: {error_msg}", "stop")
                         yield "data: [DONE]\n\n"
                         return
 
                     grok_resp = data.get("result", {}).get("response", {})
-                    logger.debug(f"[Processor] 解析响应: {len(grok_resp)} bytes")
+                    logger.debug(f"[Processor] 解析响应: {len(grok_resp)} keys")
                     if not grok_resp:
                         continue
-                    
+
                     timeout_mgr.mark_received()
 
                     # 更新模型
@@ -204,7 +226,7 @@ class GrokResponseProcessor:
                     if video_resp := grok_resp.get("streamingVideoGenerationResponse"):
                         progress = video_resp.get("progress", 0)
                         v_url = video_resp.get("videoUrl")
-                        
+
                         # 进度更新
                         if progress > last_video_progress:
                             last_video_progress = progress
@@ -217,13 +239,17 @@ class GrokResponseProcessor:
                                 else:
                                     content = f"视频已生成{progress}%</think>\n"
                                 yield make_chunk(content)
-                        
+
                         # 视频URL
                         if v_url:
                             logger.debug("[Processor] 视频生成完成")
-                            video_content = await GrokResponseProcessor._build_video_content(v_url, auth_token)
+                            video_content = (
+                                await GrokResponseProcessor._build_video_content(
+                                    v_url, auth_token
+                                )
+                            )
                             yield make_chunk(video_content)
-                        
+
                         continue
 
                     # 图片模式
@@ -242,29 +268,53 @@ class GrokResponseProcessor:
                                 try:
                                     if image_mode == "base64":
                                         # Base64模式 - 分块发送
-                                        base64_str = await image_cache_service.download_base64(f"/{img}", auth_token)
+                                        base64_str = (
+                                            await image_cache_service.download_base64(
+                                                f"/{img}", auth_token
+                                            )
+                                        )
                                         if base64_str:
                                             # 分块发送大数据
                                             if not base64_str.startswith("data:"):
                                                 parts = base64_str.split(",", 1)
                                                 if len(parts) == 2:
-                                                    yield make_chunk(f"![Generated Image](data:{parts[0]},")
+                                                    yield make_chunk(
+                                                        f"![Generated Image](data:{parts[0]},"
+                                                    )
                                                     # 8KB分块
-                                                    for i in range(0, len(parts[1]), 8192):
-                                                        yield make_chunk(parts[1][i:i+8192])
+                                                    for i in range(
+                                                        0, len(parts[1]), 8192
+                                                    ):
+                                                        yield make_chunk(
+                                                            parts[1][i : i + 8192]
+                                                        )
                                                     yield make_chunk(")\n")
                                                 else:
-                                                    yield make_chunk(f"![Generated Image]({base64_str})\n")
+                                                    yield make_chunk(
+                                                        f"![Generated Image]({base64_str})\n"
+                                                    )
                                             else:
-                                                yield make_chunk(f"![Generated Image]({base64_str})\n")
+                                                yield make_chunk(
+                                                    f"![Generated Image]({base64_str})\n"
+                                                )
                                         else:
-                                            yield make_chunk(f"![Generated Image](https://assets.grok.com/{img})\n")
+                                            yield make_chunk(
+                                                f"![Generated Image](https://assets.grok.com/{img})\n"
+                                            )
                                     else:
                                         # URL模式
-                                        await image_cache_service.download_image(f"/{img}", auth_token)
-                                        img_path = img.replace('/', '-')
-                                        base_url = setting.global_config.get("base_url", "")
-                                        img_url = f"{base_url}/images/{img_path}" if base_url else f"/images/{img_path}"
+                                        await image_cache_service.download_image(
+                                            f"/{img}", auth_token
+                                        )
+                                        img_path = img.replace("/", "-")
+                                        base_url = setting.global_config.get(
+                                            "base_url", ""
+                                        )
+                                        img_url = (
+                                            f"{base_url}/images/{img_path}"
+                                            if base_url
+                                            else f"/images/{img_path}"
+                                        )
                                         content += f"![Generated Image]({img_url})\n"
                                 except Exception as e:
                                     logger.warning(f"[Processor] 处理图片失败: {e}")
@@ -298,7 +348,11 @@ class GrokResponseProcessor:
                                             title = result.get("title", "")
                                             url = result.get("url", "")
                                             preview = result.get("preview", "")
-                                            preview_clean = preview.replace("\n", "") if isinstance(preview, str) else ""
+                                            preview_clean = (
+                                                preview.replace("\n", "")
+                                                if isinstance(preview, str)
+                                                else ""
+                                            )
                                             token += f'\n- [{title}]({url} "{preview_clean}")'
                                         token += "\n"
                                     else:
@@ -331,7 +385,7 @@ class GrokResponseProcessor:
 
                             if not should_skip:
                                 yield make_chunk(content)
-                            
+
                             is_thinking = current_is_thinking
 
                 except (orjson.JSONDecodeError, UnicodeDecodeError) as e:
@@ -350,13 +404,13 @@ class GrokResponseProcessor:
             yield make_chunk(f"处理错误: {e}", "error")
             yield "data: [DONE]\n\n"
         finally:
-            if not response_closed and hasattr(response, 'close'):
+            if not response_closed and hasattr(response, "close"):
                 try:
                     response.close()
                     logger.debug("[Processor] 响应已关闭")
                 except Exception as e:
                     logger.warning(f"[Processor] 关闭失败: {e}")
-            
+
             if session:
                 try:
                     await session.close()
@@ -369,45 +423,63 @@ class GrokResponseProcessor:
         """构建视频内容"""
         logger.debug(f"[Processor] 检测到视频: {video_url}")
         full_url = f"https://assets.grok.com/{video_url}"
-        
+
         try:
-            cache_path = await video_cache_service.download_video(f"/{video_url}", auth_token)
+            cache_path = await video_cache_service.download_video(
+                f"/{video_url}", auth_token
+            )
             if cache_path:
-                video_path = video_url.replace('/', '-')
+                video_path = video_url.replace("/", "-")
                 base_url = setting.global_config.get("base_url", "")
-                local_url = f"{base_url}/images/{video_path}" if base_url else f"/images/{video_path}"
+                local_url = (
+                    f"{base_url}/images/{video_path}"
+                    if base_url
+                    else f"/images/{video_path}"
+                )
                 return f'<video src="{local_url}" controls="controls" width="500" height="300"></video>\n'
         except Exception as e:
             logger.warning(f"[Processor] 缓存视频失败: {e}")
-        
+
         return f'<video src="{full_url}" controls="controls" width="500" height="300"></video>\n'
 
     @staticmethod
     async def _append_images(content: str, images: list, auth_token: str) -> str:
         """追加图片到内容"""
         image_mode = setting.global_config.get("image_mode", "url")
-        
+
         for img in images:
             try:
                 if image_mode == "base64":
-                    base64_str = await image_cache_service.download_base64(f"/{img}", auth_token)
+                    base64_str = await image_cache_service.download_base64(
+                        f"/{img}", auth_token
+                    )
                     if base64_str:
                         content += f"\n![Generated Image]({base64_str})"
                     else:
-                        content += f"\n![Generated Image](https://assets.grok.com/{img})"
+                        content += (
+                            f"\n![Generated Image](https://assets.grok.com/{img})"
+                        )
                 else:
-                    cache_path = await image_cache_service.download_image(f"/{img}", auth_token)
+                    cache_path = await image_cache_service.download_image(
+                        f"/{img}", auth_token
+                    )
                     if cache_path:
-                        img_path = img.replace('/', '-')
+                        img_path = img.replace("/", "-")
                         base_url = setting.global_config.get("base_url", "")
-                        img_url = f"{base_url}/images/{img_path}" if base_url else f"/images/{img_path}"
+                        img_url = (
+                            f"{base_url}/images/{img_path}"
+                            if base_url
+                            else f"/images/{img_path}"
+                        )
                         content += f"\n![Generated Image]({img_url})"
                     else:
-                        content += f"\n![Generated Image](https://assets.grok.com/{img})"
+                        content += (
+                            f"\n![Generated Image](https://assets.grok.com/{img})"
+                        )
             except Exception as e:
                 logger.warning(f"[Processor] 处理图片失败: {e}")
                 content += f"\n![Generated Image](https://assets.grok.com/{img})"
-        
+
         return content
 
     @staticmethod
@@ -418,13 +490,14 @@ class GrokResponseProcessor:
             object="chat.completion",
             created=int(time.time()),
             model=model,
-            choices=[OpenAIChatCompletionChoice(
-                index=0,
-                message=OpenAIChatCompletionMessage(
-                    role="assistant",
-                    content=content
-                ),
-                finish_reason="stop"
-            )],
-            usage=None
+            choices=[
+                OpenAIChatCompletionChoice(
+                    index=0,
+                    message=OpenAIChatCompletionMessage(
+                        role="assistant", content=content
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
         )

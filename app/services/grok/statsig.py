@@ -31,13 +31,17 @@ BASE_HEADERS = {
 
 def _random_string(length: int, letters_only: bool = True) -> str:
     """生成随机字符串"""
-    chars = string.ascii_lowercase if letters_only else string.ascii_lowercase + string.digits
-    return ''.join(random.choices(chars, k=length))
+    chars = (
+        string.ascii_lowercase
+        if letters_only
+        else string.ascii_lowercase + string.digits
+    )
+    return "".join(random.choices(chars, k=length))
 
 
 def _generate_statsig_id() -> str:
     """生成x-statsig-id
-    
+
     随机选择两种格式：
     1. e:TypeError: Cannot read properties of null (reading 'children['xxxxx']')
     2. e:TypeError: Cannot read properties of undefined (reading 'xxxxxxxxxx')
@@ -48,16 +52,18 @@ def _generate_statsig_id() -> str:
     else:
         rand = _random_string(10)
         msg = f"e:TypeError: Cannot read properties of undefined (reading '{rand}')"
-    
+
     return base64.b64encode(msg.encode()).decode()
 
 
-def get_dynamic_headers(pathname: str = "/rest/app-chat/conversations/new") -> Dict[str, str]:
+def get_dynamic_headers(
+    pathname: str = "/rest/app-chat/conversations/new",
+) -> Dict[str, str]:
     """获取请求头
-    
+
     Args:
         pathname: 请求路径
-        
+
     Returns:
         完整的请求头字典
     """
@@ -71,10 +77,13 @@ def get_dynamic_headers(pathname: str = "/rest/app-chat/conversations/new") -> D
             raise ValueError("配置文件中未设置 x_statsig_id")
         logger.debug(f"[Statsig] 使用固定值: {statsig_id}")
 
-    # 构建请求头
-    headers = BASE_HEADERS.copy()
-    headers["x-statsig-id"] = statsig_id
-    headers["x-xai-request-id"] = str(uuid.uuid4())
-    headers["Content-Type"] = "text/plain;charset=UTF-8" if "upload-file" in pathname else "application/json"
-
-    return headers
+    # 构建请求头（使用 dict 合并而非 .copy() + 逐一赋值）
+    content_type = (
+        "text/plain;charset=UTF-8" if "upload-file" in pathname else "application/json"
+    )
+    return {
+        **BASE_HEADERS,
+        "x-statsig-id": statsig_id,
+        "x-xai-request-id": str(uuid.uuid4()),
+        "Content-Type": content_type,
+    }

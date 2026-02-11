@@ -13,10 +13,14 @@ from app.services.grok.statsig import get_dynamic_headers
 
 # 常量定义
 MIME_TYPES = {
-    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
-    '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
 }
-DEFAULT_MIME = 'image/jpeg'
+DEFAULT_MIME = "image/jpeg"
 ASSETS_URL = "https://assets.grok.com"
 
 
@@ -32,7 +36,7 @@ class CacheService:
 
     def _get_path(self, file_path: str) -> Path:
         """转换文件路径为缓存路径"""
-        return self.cache_dir / file_path.lstrip('/').replace('/', '-')
+        return self.cache_dir / file_path.lstrip("/").replace("/", "-")
 
     def _log(self, level: str, msg: str):
         """统一日志输出"""
@@ -50,10 +54,12 @@ class CacheService:
             "Sec-Fetch-User": "?1",
             "Upgrade-Insecure-Requests": "1",
             "Referer": "https://grok.com/",
-            "Cookie": f"{auth_token};{cf}" if cf else auth_token
+            "Cookie": f"{auth_token};{cf}" if cf else auth_token,
         }
 
-    async def download(self, file_path: str, auth_token: str, timeout: Optional[float] = None) -> Optional[Path]:
+    async def download(
+        self, file_path: str, auth_token: str, timeout: Optional[float] = None
+    ) -> Optional[Path]:
         """下载并缓存文件"""
         cache_path = self._get_path(file_path)
         if cache_path.exists():
@@ -63,78 +69,99 @@ class CacheService:
         # 外层重试：可配置状态码（401/429等）
         retry_codes = setting.grok_config.get("retry_status_codes", [401, 429])
         MAX_OUTER_RETRY = 3
-        
+
         for outer_retry in range(MAX_OUTER_RETRY + 1):  # +1 确保实际重试3次
             try:
                 # 内层重试：403代理池重试（cache使用缓存代理，不支持代理池，所以403只重试一次）
                 max_403_retries = 5
                 retry_403_count = 0
-                
+
                 while retry_403_count <= max_403_retries:
                     proxy = await setting.get_proxy_async("cache")
                     proxies = {"http": proxy, "https": proxy} if proxy else {}
-                    
+
                     if proxy and outer_retry == 0 and retry_403_count == 0:
-                        self._log("debug", f"使用代理: {proxy.split('@')[-1] if '@' in proxy else proxy}")
+                        self._log(
+                            "debug",
+                            f"使用代理: {proxy.split('@')[-1] if '@' in proxy else proxy}",
+                        )
 
                     async with AsyncSession() as session:
                         url = f"{ASSETS_URL}{file_path}"
                         if outer_retry == 0 and retry_403_count == 0:
                             self._log("debug", f"下载: {url}")
-                        
+
                         response = await session.get(
                             url,
                             headers=self._build_headers(file_path, auth_token),
                             proxies=proxies,
                             timeout=timeout or self.timeout,
                             allow_redirects=True,
-                            impersonate="chrome133a"
+                            impersonate="chrome133a",
                         )
-                        
+
                         # 检查403错误 - 内层重试(cache不使用代理池，所以直接失败)
                         if response.status_code == 403:
                             retry_403_count += 1
-                            
+
                             if retry_403_count <= max_403_retries:
-                                self._log("warning", f"遇到403错误，正在重试 ({retry_403_count}/{max_403_retries})...")
+                                self._log(
+                                    "warning",
+                                    f"遇到403错误，正在重试 ({retry_403_count}/{max_403_retries})...",
+                                )
                                 await asyncio.sleep(0.5)
                                 continue
-                            
-                            self._log("error", f"403错误，已重试{retry_403_count-1}次，放弃")
+
+                            self._log(
+                                "error", f"403错误，已重试{retry_403_count - 1}次，放弃"
+                            )
                             return None
-                        
+
                         # 检查可配置状态码错误 - 外层重试
                         if response.status_code in retry_codes:
                             if outer_retry < MAX_OUTER_RETRY:
-                                delay = (outer_retry + 1) * 0.1  # 渐进延迟：0.1s, 0.2s, 0.3s
-                                self._log("warning", f"遇到{response.status_code}错误，外层重试 ({outer_retry+1}/{MAX_OUTER_RETRY})，等待{delay}s...")
+                                delay = (
+                                    outer_retry + 1
+                                ) * 0.1  # 渐进延迟：0.1s, 0.2s, 0.3s
+                                self._log(
+                                    "warning",
+                                    f"遇到{response.status_code}错误，外层重试 ({outer_retry + 1}/{MAX_OUTER_RETRY})，等待{delay}s...",
+                                )
                                 await asyncio.sleep(delay)
                                 break  # 跳出内层循环，进入外层重试
                             else:
-                                self._log("error", f"{response.status_code}错误，已重试{outer_retry}次，放弃")
+                                self._log(
+                                    "error",
+                                    f"{response.status_code}错误，已重试{outer_retry}次，放弃",
+                                )
                                 return None
-                        
+
                         response.raise_for_status()
-                        await asyncio.to_thread(cache_path.write_bytes, response.content)
-                        
+                        await asyncio.to_thread(
+                            cache_path.write_bytes, response.content
+                        )
+
                         if outer_retry > 0 or retry_403_count > 0:
                             self._log("info", f"重试成功！")
                         else:
                             self._log("debug", "缓存成功")
-                        
+
                         # 异步清理（带错误处理）
                         asyncio.create_task(self._safe_cleanup())
                         return cache_path
-                        
+
             except Exception as e:
                 if outer_retry < MAX_OUTER_RETRY - 1:
-                    self._log("warning", f"下载异常: {e}，外层重试 ({outer_retry+1}/{MAX_OUTER_RETRY})...")
+                    self._log(
+                        "warning",
+                        f"下载异常: {e}，外层重试 ({outer_retry + 1}/{MAX_OUTER_RETRY})...",
+                    )
                     await asyncio.sleep(0.5)
                     continue
-                
+
                 self._log("error", f"下载失败: {e}（已重试{outer_retry}次）")
                 return None
-        
+
         return None
 
     def get_cached(self, file_path: str) -> Optional[Path]:
@@ -153,30 +180,38 @@ class CacheService:
         """清理超限缓存"""
         if self._cleanup_lock.locked():
             return
-        
+
         async with self._cleanup_lock:
             try:
-                max_mb = setting.global_config.get(f"{self.cache_type}_cache_max_size_mb", 500)
+                max_mb = setting.global_config.get(
+                    f"{self.cache_type}_cache_max_size_mb", 500
+                )
                 max_bytes = max_mb * 1024 * 1024
 
-                # 获取文件信息 (path, size, mtime)
-                files = [(f, (s := f.stat()).st_size, s.st_mtime) 
-                        for f in self.cache_dir.glob("*") if f.is_file()]
+                # 获取文件信息 (path, size, mtime) - 在线程中执行避免阻塞事件循环
+                def _scan_files():
+                    return [
+                        (f, s.st_size, s.st_mtime)
+                        for f in self.cache_dir.glob("*")
+                        if f.is_file() and (s := f.stat())
+                    ]
+
+                files = await asyncio.to_thread(_scan_files)
                 total = sum(size for _, size, _ in files)
 
                 if total <= max_bytes:
                     return
 
-                self._log("info", f"清理缓存 {total/1024/1024:.1f}MB -> {max_mb}MB")
-                
+                self._log("info", f"清理缓存 {total / 1024 / 1024:.1f}MB -> {max_mb}MB")
+
                 # 删除最旧的文件
                 for path, size, _ in sorted(files, key=lambda x: x[2]):
                     if total <= max_bytes:
                         break
                     await asyncio.to_thread(path.unlink)
                     total -= size
-                
-                self._log("info", f"清理完成: {total/1024/1024:.1f}MB")
+
+                self._log("info", f"清理完成: {total / 1024 / 1024:.1f}MB")
             except Exception as e:
                 self._log("error", f"清理失败: {e}")
 
@@ -214,7 +249,7 @@ class ImageCache(CacheService):
                 return None
 
             result = self.to_base64(cache_path)
-            
+
             # 清理临时文件
             try:
                 cache_path.unlink()
